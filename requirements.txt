@@ -1,0 +1,6 @@
+flask>=3.0.0
+flask-cors>=4.0.0
+rembg>=2.0.50
+Pillow>=10.0.0
+onnxruntime>=1.16.0
+gunicorn>=21.0.0
