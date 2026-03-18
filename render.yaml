@@ -3,7 +3,11 @@ services:
     name: cutout-studio
     runtime: python
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app --workers 2 --timeout 120 --bind 0.0.0.0:$PORT
+    startCommand: gunicorn app:app --workers 1 --timeout 300 --bind 0.0.0.0:$PORT --log-level info
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.0
+      - key: CUDA_VISIBLE_DEVICES
+        value: ""
+      - key: ORT_LOGGING_LEVEL
+        value: "3"
