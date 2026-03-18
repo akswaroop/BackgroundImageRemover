@@ -2,19 +2,16 @@ import os
 import sys
 import threading
 import warnings
+import io as _io
 warnings.filterwarnings("ignore")
 
-# Must be FIRST before any other imports
 os.environ["CUDA_VISIBLE_DEVICES"] = ""
-os.environ["OMP_NUM_THREADS"] = "4"
+os.environ["OMP_NUM_THREADS"] = "2"
 os.environ["ORT_LOGGING_LEVEL"] = "3"
-os.environ["ONNXRUNTIME_PROVIDERS"] = "CPUExecutionProvider"
 
-# Redirect stderr temporarily to suppress GPU discovery errors on import
-import io as _io
+# Suppress GPU stderr on import
 _old_stderr = sys.stderr
 sys.stderr = _io.StringIO()
-
 try:
     import onnxruntime as ort
     ort.set_default_logger_severity(3)
@@ -31,55 +28,63 @@ import time
 app = Flask(__name__)
 CORS(app)
 
+# Only ONE model loaded at a time to stay within 512MB RAM
 MODELS = {
     "general":  "u2net",
     "portrait": "u2net_human_seg",
     "anime":    "isnet-anime",
-    "product":  "silueta",
+    "product":  "silueta",       # smallest at 43MB
 }
 
 SESS_OPTS = ort.SessionOptions()
-SESS_OPTS.inter_op_num_threads = 2
-SESS_OPTS.intra_op_num_threads = 2
+SESS_OPTS.inter_op_num_threads = 1
+SESS_OPTS.intra_op_num_threads = 1
 SESS_OPTS.log_severity_level = 3
 CPU_PROVIDERS = ["CPUExecutionProvider"]
 
-_sessions = {}
-_lock = threading.Lock()
+# Only keep ONE session at a time to save memory
+_current_session = None
+_current_model   = None
+_lock            = threading.Lock()
 
 
 def get_session(model_name):
-    if model_name not in _sessions:
-        with _lock:
-            if model_name not in _sessions:
-                print(f"[CutOut] Loading: {model_name}", flush=True)
-                try:
-                    _sessions[model_name] = new_session(
-                        model_name,
-                        sess_options=SESS_OPTS,
-                        providers=CPU_PROVIDERS,
-                    )
-                    print(f"[CutOut] Ready: {model_name}", flush=True)
-                except Exception as e:
-                    print(f"[CutOut] Failed {model_name}: {e}", flush=True)
-                    if model_name != "u2net":
-                        return get_session("u2net")
-                    raise e
-    return _sessions[model_name]
+    global _current_session, _current_model
+    if _current_model == model_name and _current_session is not None:
+        return _current_session
+    with _lock:
+        if _current_model != model_name:
+            print(f"[CutOut] Switching model: {_current_model} → {model_name}", flush=True)
+            # Free old session from memory
+            _current_session = None
+            _current_model   = None
+            import gc
+            gc.collect()
+            try:
+                _current_session = new_session(
+                    model_name,
+                    sess_options=SESS_OPTS,
+                    providers=CPU_PROVIDERS,
+                )
+                _current_model = model_name
+                print(f"[CutOut] Ready: {model_name}", flush=True)
+            except Exception as e:
+                print(f"[CutOut] Failed {model_name}: {e}", flush=True)
+                raise e
+    return _current_session
 
 
-def preload_models():
-    time.sleep(3)
-    print("[CutOut] Preloading models...", flush=True)
-    for key, model_name in MODELS.items():
-        try:
-            get_session(model_name)
-        except Exception as e:
-            print(f"[CutOut] Skipping {key}: {e}", flush=True)
-    print("[CutOut] All models ready!", flush=True)
+def preload_default():
+    """Only preload the general model at startup — 176MB fits fine."""
+    time.sleep(2)
+    try:
+        get_session("u2net")
+        print("[CutOut] Default model ready!", flush=True)
+    except Exception as e:
+        print(f"[CutOut] Preload failed: {e}", flush=True)
 
 
-threading.Thread(target=preload_models, daemon=True).start()
+threading.Thread(target=preload_default, daemon=True).start()
 
 
 @app.route("/")
@@ -96,8 +101,9 @@ def ping():
 def health():
     return jsonify({
         "status": "ok",
-        "loaded": list(_sessions.keys()),
-        "version": "2.5",
+        "models": list(MODELS.keys()),
+        "loaded": _current_model,
+        "version": "2.6",
     })
 
 
@@ -155,7 +161,7 @@ def remove_background():
             canvas = Image.alpha_composite(canvas, sc)
         if bg_color.startswith("#") and len(bg_color) >= 7:
             try:
-                h = bg_color.lstrip("#")
+                h  = bg_color.lstrip("#")
                 bl = Image.new("RGBA", img.size, (
                     int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16), 255
                 ))
