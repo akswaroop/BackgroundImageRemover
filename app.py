@@ -1,22 +1,32 @@
 import os
+import sys
 import threading
+import warnings
+warnings.filterwarnings("ignore")
 
-# Must be set BEFORE any other imports
+# Must be FIRST before any other imports
 os.environ["CUDA_VISIBLE_DEVICES"] = ""
 os.environ["OMP_NUM_THREADS"] = "4"
+os.environ["ORT_LOGGING_LEVEL"] = "3"
 os.environ["ONNXRUNTIME_PROVIDERS"] = "CPUExecutionProvider"
-os.environ["ORT_LOGGING_LEVEL"] = "3"  # suppress all onnxruntime warnings
+
+# Redirect stderr temporarily to suppress GPU discovery errors on import
+import io as _io
+_old_stderr = sys.stderr
+sys.stderr = _io.StringIO()
+
+try:
+    import onnxruntime as ort
+    ort.set_default_logger_severity(3)
+finally:
+    sys.stderr = _old_stderr
 
 from flask import Flask, request, render_template, send_file, jsonify
 from flask_cors import CORS
 from rembg import remove, new_session
 from PIL import Image, ImageFilter
-import onnxruntime as ort
 import io
 import time
-
-# Suppress onnxruntime logging completely
-ort.set_default_logger_severity(3)
 
 app = Flask(__name__)
 CORS(app)
@@ -59,8 +69,8 @@ def get_session(model_name):
 
 
 def preload_models():
-    time.sleep(2)  # wait for server to fully start
-    print("[CutOut] Preloading models in background...", flush=True)
+    time.sleep(3)
+    print("[CutOut] Preloading models...", flush=True)
     for key, model_name in MODELS.items():
         try:
             get_session(model_name)
@@ -77,13 +87,17 @@ def index():
     return render_template("index.html")
 
 
+@app.route("/ping")
+def ping():
+    return "pong", 200
+
+
 @app.route("/health")
 def health():
     return jsonify({
         "status": "ok",
-        "models": list(MODELS.keys()),
         "loaded": list(_sessions.keys()),
-        "version": "2.4",
+        "version": "2.5",
     })
 
 
@@ -142,7 +156,9 @@ def remove_background():
         if bg_color.startswith("#") and len(bg_color) >= 7:
             try:
                 h = bg_color.lstrip("#")
-                bl = Image.new("RGBA", img.size, (int(h[0:2],16), int(h[2:4],16), int(h[4:6],16), 255))
+                bl = Image.new("RGBA", img.size, (
+                    int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16), 255
+                ))
                 canvas = Image.alpha_composite(bl, canvas)
             except ValueError:
                 pass
@@ -164,7 +180,7 @@ def remove_background():
         mime, fname = "image/png", "cutout.png"
 
     buf.seek(0)
-    print(f"[CutOut] {elapsed}ms  {model_name}  {img.width}x{img.height}", flush=True)
+    print(f"[CutOut] {elapsed}ms {model_name} {img.width}x{img.height}", flush=True)
 
     resp = send_file(buf, mimetype=mime, as_attachment=False, download_name=fname)
     resp.headers["X-Processing-Time"] = str(elapsed)
@@ -174,4 +190,6 @@ def remove_background():
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=False)
+    port = int(os.environ.get("PORT", 5000))
+    print(f"[CutOut] Starting on port {port}", flush=True)
+    app.run(host="0.0.0.0", port=port, debug=False)

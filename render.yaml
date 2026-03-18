@@ -3,7 +3,7 @@ services:
     name: cutout-studio
     runtime: python
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app --workers 1 --timeout 300 --bind 0.0.0.0:$PORT --log-level info
+    startCommand: gunicorn app:app --workers 1 --timeout 300 --bind 0.0.0.0:$PORT --log-level debug
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.0
@@ -11,3 +11,5 @@ services:
         value: ""
       - key: ORT_LOGGING_LEVEL
         value: "3"
+      - key: PYTHONUNBUFFERED
+        value: "1"
